@@ -1,0 +1,135 @@
+name: Playwright Tests
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playwright-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: eventhub_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --user=root --password=root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/eventhub_test
+      PORT: 3001
+      JWT_SECRET: ci-only-jwt-secret
+      CORS_ORIGIN: http://localhost:3000
+      NODE_ENV: test
+      NEXT_PUBLIC_API_URL: http://localhost:3001/api
+      PLAYWRIGHT_BASE_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare database
+        run: |
+          npm run prisma:generate --prefix backend
+          npm run prisma:migrate:prod --prefix backend
+          npm run seed --prefix backend
+
+      - name: Start app and run Playwright tests
+        run: |
+          npm run start --prefix backend > backend.log 2>&1 &
+          npm run dev --prefix frontend > frontend.log 2>&1 &
+
+          backend_ready=false
+          for attempt in $(seq 1 30); do
+            health="$(curl --silent http://localhost:3001/api/health || true)"
+            if printf '%s' "$health" | grep -q '"dbStatus":"connected"'; then
+              echo "Backend and database are ready."
+              backend_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$backend_ready" != true ]; then
+            cat backend.log
+            echo "::error::Backend did not become healthy."
+            exit 1
+          fi
+
+          test_email="playwright-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}@example.test"
+          test_password="$(openssl rand -hex 24)"
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://localhost:3001/api/auth/register \
+            --header 'Content-Type: application/json' \
+            --data "{\"email\":\"$test_email\",\"password\":\"$test_password\"}")"
+          if [ "$status" != "201" ]; then
+            echo "::error::Failed to create the disposable Playwright account (HTTP $status)."
+            exit 1
+          fi
+          export EVENTHUB_TEST_EMAIL="$test_email"
+          export EVENTHUB_TEST_PASSWORD="$test_password"
+          export EVENTHUB_TEST_ACCOUNT_IS_DISPOSABLE=true
+
+          frontend_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "$PLAYWRIGHT_BASE_URL/login" > /dev/null; then
+              echo "Frontend is ready."
+              frontend_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$frontend_ready" != true ]; then
+            cat frontend.log
+            echo "::error::Frontend did not become ready."
+            exit 1
+          fi
+
+          npx playwright test --forbid-only --reporter=line,html
+
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-html-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
