@@ -200,14 +200,14 @@ Scope: Booking Management (Flow 4 — View, Cancel, Clear, Refund Eligibility)
 
 ---
 
-### TC-107: Bookings page shows max 10 bookings per page (pagination)
+### TC-107: Bookings API applies the default page limit
 **Category**: Business Rule
 **Priority**: P1
-**Preconditions**: User has more than 10 bookings visible in DB (unlikely with limit 9, but relevant for API pagination param)
+**Preconditions**: User has exactly 9 bookings, the maximum allowed by the booking limit
 **Steps**:
-1. Send `GET /api/bookings?page=1&limit=10`
-**Expected Results**: Response includes `pagination.limit = 10`, `pagination.totalPages`, and `data` array with at most 10 items
-**Business Rule**: Rule 4 — max 9 bookings per user; API default limit = 10
+1. Send `GET /api/bookings` with the user's valid JWT
+**Expected Results**: Response includes `pagination.limit = 10`, `pagination.totalPages = 1`, and all 9 bookings in `data`
+**Business Rule**: Rule 4 — max 9 bookings per user; `getBookings` defaults to a page limit of 10
 **Suggested Layer**: API
 
 ---
@@ -324,6 +324,32 @@ Scope: Booking Management (Flow 4 — View, Cancel, Clear, Refund Eligibility)
 1. Send `GET /api/bookings/ref/:userA_ref` with User B's JWT
 **Expected Results**: HTTP 403; "You do not own this booking"
 **Business Rule**: `bookingService.getBookingByRef` — ownership check
+**Suggested Layer**: API
+
+---
+
+### TC-207: Booking list contains only the authenticated user's bookings
+**Category**: Security
+**Priority**: P0
+**Preconditions**: Users A and B each have at least one booking; both have valid JWTs
+**Steps**:
+1. Request `GET /api/bookings` using User B's JWT
+2. Compare returned booking IDs with the bookings owned by Users A and B
+**Expected Results**: The response contains User B's bookings only; no booking belonging to User A is disclosed
+**Business Rule**: Rule 2 — each user only sees their own bookings; `bookingRepository.findAll` filters by `userId`
+**Suggested Layer**: API
+
+---
+
+### TC-208: Clear-all deletes only the authenticated user's bookings
+**Category**: Security
+**Priority**: P0
+**Preconditions**: Users A and B each have at least one booking; both have valid JWTs
+**Steps**:
+1. Send `DELETE /api/bookings` using User B's JWT
+2. Request `GET /api/bookings` using each user's JWT
+**Expected Results**: User B's bookings are cleared; User A's bookings remain unchanged
+**Business Rule**: Rule 2 — bookings are isolated by user; `deleteAllForUser` filters by `userId`
 **Suggested Layer**: API
 
 ---
@@ -530,8 +556,8 @@ Scope: Booking Management (Flow 4 — View, Cancel, Clear, Refund Eligibility)
 **Steps**:
 1. Navigate to `/bookings`
 2. Click "Clear all bookings" and confirm
-**Expected Results**: Booking is deleted; page shows empty state; `DELETE /api/bookings` returns `{ deleted: 1 }`
-**Business Rule**: `clearAllBookings` — `deleteAllForUser` returns count of deleted records
+**Expected Results**: Booking is deleted; page shows empty state; `DELETE /api/bookings` returns `message: "1 booking(s) cleared"`
+**Business Rule**: `clearAllBookings` — `deleteAllForUser` returns the count used in the API success message
 **Suggested Layer**: E2E / API
 
 ---
@@ -539,9 +565,9 @@ Scope: Booking Management (Flow 4 — View, Cancel, Clear, Refund Eligibility)
 ### TC-407: Pagination on bookings list (API) — page 2 with partial results
 **Category**: Edge Case
 **Priority**: P2
-**Preconditions**: User has more than the default page limit of bookings visible in API
+**Preconditions**: User has 6–9 bookings, all created through the normal booking flow
 **Steps**:
-1. Send `GET /api/bookings?page=2&limit=5`
+1. Send `GET /api/bookings?page=2&limit=5` with the user's valid JWT
 **Expected Results**: Returns page 2 results; `pagination.page = 2`; `data` array contains at most 5 items
 **Business Rule**: Pagination behavior in `bookingService.getBookings`
 **Suggested Layer**: API
@@ -697,10 +723,11 @@ Scope: Booking Management (Flow 4 — View, Cancel, Clear, Refund Eligibility)
 ### TC-510: Bookings page pagination UI renders when total exceeds page size
 **Category**: UI State
 **Priority**: P2
-**Preconditions**: API returns `pagination.totalPages > 1`
+**Preconditions**: Mock the bookings API to return multiple pages (the normal booking cap of 9 cannot exceed the UI page size of 10)
 **Steps**:
-1. Navigate to `/bookings` with enough bookings to trigger multi-page response
+1. Navigate to `/bookings` with the mocked first-page response
 2. Observe pagination controls
-**Expected Results**: `Pagination` component renders with correct `currentPage` and `totalPages`; clicking next page updates URL `?page=N` and loads next page of bookings
+3. Click the next-page control and observe the URL and the second-page response
+**Expected Results**: `Pagination` component renders with the mocked `currentPage` and `totalPages`; clicking next updates the URL to `?page=2` and loads the mocked second page
 **Business Rule**: Pagination in `BookingsContent` driven by `pagination` from API response
 **Suggested Layer**: E2E / Component
