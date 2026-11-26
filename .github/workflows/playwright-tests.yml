@@ -76,7 +76,7 @@ jobs:
       - name: Start app and run Playwright tests
         run: |
           npm run start --prefix backend > backend.log 2>&1 &
-          npm run dev --prefix frontend > frontend.log 2>&1 &
+          PORT=3000 npm run dev --prefix frontend > frontend.log 2>&1 &
 
           backend_ready=false
           for attempt in $(seq 1 30); do
